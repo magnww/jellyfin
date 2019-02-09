@@ -1490,6 +1490,10 @@ namespace MediaBrowser.Controller.MediaEncoding
             }
             else
             {
+                if (string.Equals(state.VideoStream.PixelFormat, "yuv420p10le", StringComparison.OrdinalIgnoreCase))
+                {
+                    outputSizeParam += ",colormatrix=bt2020:bt709";
+                }
                 return string.Format(" -filter_complex \"[{0}:{1}]{4}[sub];[0:{2}][sub]overlay{3}\"",
                     mapPrefix.ToString(_usCulture),
                     subtitleStreamIndex.ToString(_usCulture),
@@ -1680,6 +1684,12 @@ namespace MediaBrowser.Controller.MediaEncoding
                     {
                         filters.Add(string.Format("scale=trunc(oh*a/2)*2:min(max(iw/dar\\,ih)\\,{0})", maxHeightParam));
                     }
+                }
+
+                // Convert color space
+                if (string.Equals(pixelFormat, "yuv420p10le", StringComparison.OrdinalIgnoreCase))
+                {
+                    filters.Add("colormatrix=bt2020:bt709");
                 }
             }
 
