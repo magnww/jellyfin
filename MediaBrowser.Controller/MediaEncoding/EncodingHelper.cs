@@ -1462,12 +1462,41 @@ namespace MediaBrowser.Controller.MediaEncoding
                 ? 0
                 : state.SubtitleStream.Index;
 
-            return string.Format(" -filter_complex \"[{0}:{1}]{4}[sub];[0:{2}][sub]overlay{3}\"",
-                mapPrefix.ToString(_usCulture),
-                subtitleStreamIndex.ToString(_usCulture),
-                state.VideoStream.Index.ToString(_usCulture),
-                outputSizeParam,
-                videoSizeParam);
+            var videoDecoder = this.GetHardwareAcceleratedVideoDecoder(state, options);
+            if ((videoDecoder ?? string.Empty).IndexOf("hevc_qsv", StringComparison.OrdinalIgnoreCase) != -1 ||
+                (videoDecoder ?? string.Empty).IndexOf("h264_qsv", StringComparison.OrdinalIgnoreCase) != -1)
+            {
+                var hwWidth = state.BaseRequest.Width ?? state.BaseRequest.MaxWidth.Value;
+                var hwHeight = Math.Truncate((float)state.VideoStream.Height.Value / state.VideoStream.Width.Value * hwWidth);
+                var hwVideo = string.Format("scale_qsv=w={0}:h={1}", hwWidth, hwHeight);
+                // Convert Color Space
+                if (string.Equals(state.VideoStream.PixelFormat, "yuv420p10le", StringComparison.OrdinalIgnoreCase))
+                {
+                    hwVideo += ":format=nv12,hwdownload,format=nv12";
+                }
+                else
+                {
+                    hwVideo += ",hwdownload,format=p010";
+                }
+                var hwVideoSizeParam = string.Format("scale={0}:{1}", hwWidth, hwHeight);
+                hwVideoSizeParam += ":force_original_aspect_ratio=decrease";
+                return string.Format(" -filter_complex \"[0:{2}]{5}[v0];[{0}:{1}]{4}[sub];[v0][sub]overlay\"",
+                   mapPrefix.ToString(_usCulture),
+                   subtitleStreamIndex.ToString(_usCulture),
+                   state.VideoStream.Index.ToString(_usCulture),
+                   outputSizeParam,
+                   hwVideoSizeParam,
+                   hwVideo);
+            }
+            else
+            {
+                return string.Format(" -filter_complex \"[{0}:{1}]{4}[sub];[0:{2}][sub]overlay{3}\"",
+                    mapPrefix.ToString(_usCulture),
+                    subtitleStreamIndex.ToString(_usCulture),
+                    state.VideoStream.Index.ToString(_usCulture),
+                    outputSizeParam,
+                    videoSizeParam);
+            }
         }
 
         private ValueTuple<int?, int?> GetFixedOutputSize(int? videoWidth,
@@ -1514,7 +1543,8 @@ namespace MediaBrowser.Controller.MediaEncoding
             int? requestedWidth,
             int? requestedHeight,
             int? requestedMaxWidth,
-            int? requestedMaxHeight)
+            int? requestedMaxHeight,
+            string pixelFormat)
         {
             var filters = new List<string>();
             var fixedOutputSize = GetFixedOutputSize(videoWidth, videoHeight, requestedWidth, requestedHeight, requestedMaxWidth, requestedMaxHeight);
@@ -1538,6 +1568,22 @@ namespace MediaBrowser.Controller.MediaEncoding
             else if ((videoDecoder ?? string.Empty).IndexOf("_cuvid", StringComparison.OrdinalIgnoreCase) != -1 && fixedOutputSize.Item1.HasValue && fixedOutputSize.Item2.HasValue)
             {
                 // Nothing to do, it's handled as an input resize filter
+            }
+            else if ((videoDecoder ?? string.Empty).IndexOf("hevc_qsv", StringComparison.OrdinalIgnoreCase) != -1 ||
+                (videoDecoder ?? string.Empty).IndexOf("h264_qsv", StringComparison.OrdinalIgnoreCase) != -1)
+            {
+                var outputWidth = fixedOutputSize.Item1.Value;
+                var outputHeight = fixedOutputSize.Item2.Value;
+                var hwScale = string.Format("scale_qsv=w={0}:h={1}", outputWidth, outputHeight);
+                if (string.Equals(pixelFormat, "yuv420p10le", StringComparison.OrdinalIgnoreCase))
+                {
+                    hwScale += ":format=nv12,hwdownload,format=nv12";
+                }
+                else
+                {
+                    hwScale += ",hwdownload,format=nv12";
+                }
+                filters.Add(hwScale);
             }
             else
             {
@@ -1736,7 +1782,7 @@ namespace MediaBrowser.Controller.MediaEncoding
 
             var videoDecoder = this.GetHardwareAcceleratedVideoDecoder(state, options);
 
-            filters.AddRange(GetScalingFilters(inputWidth, inputHeight, threeDFormat, videoDecoder, outputVideoCodec, request.Width, request.Height, request.MaxWidth, request.MaxHeight));
+            filters.AddRange(GetScalingFilters(inputWidth, inputHeight, threeDFormat, videoDecoder, outputVideoCodec, request.Width, request.Height, request.MaxWidth, request.MaxHeight, videoStream.PixelFormat));
 
             var output = string.Empty;
 
@@ -2187,15 +2233,14 @@ namespace MediaBrowser.Controller.MediaEncoding
                                     encodingOptions.HardwareDecodingCodecs = Array.Empty<string>();
                                     return null;
                                 }
-                                return "-c:v h264_qsv ";
+                                return "-hwaccel qsv -c:v h264_qsv ";
                             }
                             break;
                         case "hevc":
                         case "h265":
                             if (_mediaEncoder.SupportsDecoder("hevc_qsv") && encodingOptions.HardwareDecodingCodecs.Contains("hevc", StringComparer.OrdinalIgnoreCase))
                             {
-                                //return "-c:v hevc_qsv -load_plugin hevc_hw ";
-                                return "-c:v hevc_qsv ";
+                                return "-hwaccel qsv -c:v hevc_qsv -load_plugin hevc_hw ";
                             }
                             break;
                         case "mpeg2video":
